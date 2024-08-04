@@ -143,6 +143,9 @@ public abstract class AbstractStreamTaskNetworkInput<
                     int offset = buffer.getMemorySegmentOffset();
                     MemorySegment segment = buffer.getMemorySegment();
                     int numBytes = buffer.getSize();
+                    LOG.info("Insight Debugging, class::method {}::{}, {} in total numBytes",
+                            this.getClass().getName(), "emitNext", numBytes);
+
                     segment.get(offset, this.currentReadBytes, 0, numBytes);
 
                     LOG.info("Insight Debugging, class::method {}::{}, {} in total numBytes, value is {}",
