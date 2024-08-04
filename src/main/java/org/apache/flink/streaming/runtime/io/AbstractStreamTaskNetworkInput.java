@@ -72,7 +72,7 @@ public abstract class AbstractStreamTaskNetworkInput<
     protected final CanEmitBatchOfRecordsChecker canEmitBatchOfRecords;
 
     public static final Logger LOG = LoggerFactory.getLogger(AbstractStreamTaskNetworkInput.class);
-    private byte[] currentReadBytes = new byte[1024];
+    private byte[] currentReadBytes = new byte[8192];
 
     public AbstractStreamTaskNetworkInput(
             CheckpointedInputGate checkpointedInputGate,
