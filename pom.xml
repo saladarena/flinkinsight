@@ -17,7 +17,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
-    <flink.version>1.19.1</flink.version>
+    <flink.version>1.16.3</flink.version>
   </properties>
 
   <dependencies>

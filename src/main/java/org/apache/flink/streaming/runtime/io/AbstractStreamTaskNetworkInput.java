@@ -18,13 +18,11 @@
 package org.apache.flink.streaming.runtime.io;
 
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.io.network.api.EndOfData;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
 import org.apache.flink.runtime.io.network.api.serialization.RecordDeserializer;
-import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.partition.consumer.BufferOrEvent;
 import org.apache.flink.runtime.io.network.partition.consumer.EndOfChannelStateEvent;
 import org.apache.flink.runtime.plugable.DeserializationDelegate;
@@ -32,13 +30,9 @@ import org.apache.flink.runtime.plugable.NonReusingDeserializationDelegate;
 import org.apache.flink.streaming.runtime.io.checkpointing.CheckpointedInputGate;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElement;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
-import org.apache.flink.streaming.runtime.tasks.StreamTask.CanEmitBatchOfRecordsChecker;
 import org.apache.flink.streaming.runtime.watermarkstatus.StatusWatermarkValve;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -65,22 +59,15 @@ public abstract class AbstractStreamTaskNetworkInput<
     protected final StatusWatermarkValve statusWatermarkValve;
 
     protected final int inputIndex;
-    private final RecordAttributesCombiner recordAttributesCombiner;
     private InputChannelInfo lastChannel = null;
     private R currentRecordDeserializer = null;
-
-    protected final CanEmitBatchOfRecordsChecker canEmitBatchOfRecords;
-
-    public static final Logger LOG = LoggerFactory.getLogger(AbstractStreamTaskNetworkInput.class);
-    private byte[] currentReadBytes = new byte[8192];
 
     public AbstractStreamTaskNetworkInput(
             CheckpointedInputGate checkpointedInputGate,
             TypeSerializer<T> inputSerializer,
             StatusWatermarkValve statusWatermarkValve,
             int inputIndex,
-            Map<InputChannelInfo, R> recordDeserializers,
-            CanEmitBatchOfRecordsChecker canEmitBatchOfRecords) {
+            Map<InputChannelInfo, R> recordDeserializers) {
         super();
         this.checkpointedInputGate = checkpointedInputGate;
         deserializationDelegate =
@@ -95,9 +82,6 @@ public abstract class AbstractStreamTaskNetworkInput<
         this.statusWatermarkValve = checkNotNull(statusWatermarkValve);
         this.inputIndex = inputIndex;
         this.recordDeserializers = checkNotNull(recordDeserializers);
-        this.canEmitBatchOfRecords = checkNotNull(canEmitBatchOfRecords);
-        this.recordAttributesCombiner =
-                new RecordAttributesCombiner(checkpointedInputGate.getNumberOfInputChannels());
     }
 
     @Override
@@ -118,11 +102,7 @@ public abstract class AbstractStreamTaskNetworkInput<
                 }
 
                 if (result.isFullRecord()) {
-                    final boolean breakBatchEmitting =
-                            processElement(deserializationDelegate.getInstance(), output);
-                    if (canEmitBatchOfRecords.check() && !breakBatchEmitting) {
-                        continue;
-                    }
+                    processElement(deserializationDelegate.getInstance(), output);
                     return DataInputStatus.MORE_AVAILABLE;
                 }
             }
@@ -133,31 +113,9 @@ public abstract class AbstractStreamTaskNetworkInput<
                 // data after the barrier before checkpoint is performed for unaligned checkpoint
                 // mode
                 if (bufferOrEvent.get().isBuffer()) {
-
-                    //debugging insight
-                    LOG.info("Insight Debugging, class::method {}::{}", this.getClass().getName(), "emitNext");
-
-                    Buffer buffer = bufferOrEvent.get().getBuffer();
-
-
-                    int offset = buffer.getMemorySegmentOffset();
-                    MemorySegment segment = buffer.getMemorySegment();
-                    int numBytes = buffer.getSize();
-                    LOG.info("Insight Debugging, class::method {}::{}, {} in total numBytes",
-                            this.getClass().getName(), "emitNext", numBytes);
-
-                    segment.get(offset, this.currentReadBytes, 0, numBytes);
-
-                    LOG.info("Insight Debugging, class::method {}::{}, {} in total numBytes, value is {}",
-                            this.getClass().getName(), "emitNext", numBytes, bytesToHex(this.currentReadBytes, numBytes));
-
                     processBuffer(bufferOrEvent.get());
                 } else {
-                    DataInputStatus status = processEvent(bufferOrEvent.get());
-                    if (status == DataInputStatus.MORE_AVAILABLE && canEmitBatchOfRecords.check()) {
-                        continue;
-                    }
-                    return status;
+                    return processEvent(bufferOrEvent.get());
                 }
             } else {
                 if (checkpointedInputGate.isFinished()) {
@@ -171,36 +129,19 @@ public abstract class AbstractStreamTaskNetworkInput<
         }
     }
 
-    /**
-     * Process the given stream element and returns whether to stop processing and return from the
-     * emitNext method so that the emitNext is invoked again right after processing the element to
-     * allow behavior change in emitNext method. For example, the behavior of emitNext may need to
-     * change right after process a RecordAttributes.
-     */
-    private boolean processElement(StreamElement streamElement, DataOutput<T> output)
-            throws Exception {
-        if (streamElement.isRecord()) {
-            output.emitRecord(streamElement.asRecord());
-            return false;
-        } else if (streamElement.isWatermark()) {
+    private void processElement(StreamElement recordOrMark, DataOutput<T> output) throws Exception {
+        if (recordOrMark.isRecord()) {
+            output.emitRecord(recordOrMark.asRecord());
+        } else if (recordOrMark.isWatermark()) {
             statusWatermarkValve.inputWatermark(
-                    streamElement.asWatermark(), flattenedChannelIndices.get(lastChannel), output);
-            return false;
-        } else if (streamElement.isLatencyMarker()) {
-            output.emitLatencyMarker(streamElement.asLatencyMarker());
-            return false;
-        } else if (streamElement.isWatermarkStatus()) {
+                    recordOrMark.asWatermark(), flattenedChannelIndices.get(lastChannel), output);
+        } else if (recordOrMark.isLatencyMarker()) {
+            output.emitLatencyMarker(recordOrMark.asLatencyMarker());
+        } else if (recordOrMark.isWatermarkStatus()) {
             statusWatermarkValve.inputWatermarkStatus(
-                    streamElement.asWatermarkStatus(),
+                    recordOrMark.asWatermarkStatus(),
                     flattenedChannelIndices.get(lastChannel),
                     output);
-            return false;
-        } else if (streamElement.isRecordAttributes()) {
-            recordAttributesCombiner.inputRecordAttributes(
-                    streamElement.asRecordAttributes(),
-                    flattenedChannelIndices.get(lastChannel),
-                    output);
-            return true;
         } else {
             throw new UnsupportedOperationException("Unknown type of StreamElement");
         }
@@ -277,17 +218,5 @@ public abstract class AbstractStreamTaskNetworkInput<
             deserializer.clear();
             recordDeserializers.remove(channelInfo);
         }
-    }
-
-
-    private static final byte[] HEX_ARRAY = "0123456789ABCDEF".getBytes(StandardCharsets.US_ASCII);
-    public static String bytesToHex(byte[] bytes, int size) {
-        byte[] hexChars = new byte[size * 2];
-        for (int j = 0; j < size; j++) {
-            int v = bytes[j] & 0xFF;
-            hexChars[j * 2] = HEX_ARRAY[v >>> 4];
-            hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
-        }
-        return new String(hexChars, StandardCharsets.UTF_8);
     }
 }
