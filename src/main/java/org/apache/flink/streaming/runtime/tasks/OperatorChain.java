@@ -555,6 +555,10 @@ public abstract class OperatorChain<OUT, OP extends StreamOperator<OUT>>
             outSerializer =
                     upStreamConfig.getTypeSerializerOut(
                             taskEnvironment.getUserCodeClassLoader().asClassLoader());
+
+           LOG.info(">>>>> TaskName {} streamoutput outSerializer type {}",
+                   taskEnvironment.getTaskInfo().getTaskNameWithSubtasks(),
+                   outSerializer.getClass().getName());
         }
 
         return closer.register(
